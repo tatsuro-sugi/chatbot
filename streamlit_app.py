@@ -37,8 +37,8 @@ else:
     st.info("PDFをアップロードすると内容を解析できます。")
 
 # ===== APIキー（Secrets / 環境変数から自動取得）=====
-api_key   = (st.secrets.get("OPENAI_API_KEY")   or os.getenv("OPENAI_API_KEY")   or "").strip()
-project_id= (st.secrets.get("OPENAI_PROJECT_ID")or os.getenv("OPENAI_PROJECT_ID")or "").strip()
+api_key    = (st.secrets.get("OPENAI_API_KEY")    or os.getenv("OPENAI_API_KEY")    or "").strip()
+project_id = (st.secrets.get("OPENAI_PROJECT_ID") or os.getenv("OPENAI_PROJECT_ID") or "").strip()
 if not api_key:
     st.error("OpenAIのAPIキーが設定されていません。Secretsに OPENAI_API_KEY を追加してください。")
     st.stop()
@@ -62,19 +62,28 @@ system_prompt = (
     + (f"\n\n--- 参考ドキュメント抜粋 ---\n{context_snippet}" if context_snippet else "")
 )
 
+# ===== ここが 1) の置き換え：自然な会話形式で1問ずつ出す =====
 def ask_next_question() -> bool:
-    """抽出済みの“問い”を1つ投げる。投げたらTrue。もうなければFalse。"""
+    """抽出済みの問いを1つだけ自然文で投げる。投げたら True、もう無ければ False。"""
     if ss.q_index < len(ss.questions):
-        q = ss.questions[ss.q_index]
+        q = ss.questions[ss.q_index].strip()
         ss.q_index += 1
-        msg = f"**Q{ss.q_index}. {q}**\n\n自由に書いてください。"
+
         with st.chat_message("assistant"):
-            st.markdown(msg)
-        ss.messages.append({"role": "assistant", "content": msg})
+            # 最初の1問目だけ、導入のひと言を添える
+            if ss.q_index == 1:
+                st.markdown("じゃあ今回の研修を振り返っていきましょう！")
+            st.markdown(q)  # 見出しや番号は付けず、質問文そのまま
+
+        # ログにも保存（1問目は導入文を含めて保存）
+        ss.messages.append({
+            "role": "assistant",
+            "content": ("じゃあ今回の研修を振り返っていきましょう！\n" + q) if ss.q_index == 1 else q
+        })
         return True
     return False
 
-# 入力受付
+# ===== 入力受付 =====
 if prompt := st.chat_input("研修レポートの作成をはじめましょう（ここに話しかけてください）"):
     ss.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -93,18 +102,17 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
             if ss.questions:
                 ask_next_question()
             else:
-                msg = "資料内で“Q”が見つかりませんでした。まずは**感想を気軽に書いてください😉**"
+                msg = "資料内で“Q”が見つかりませんでした。まずは研修の感想から教えてください。"
                 with st.chat_message("assistant"): st.markdown(msg)
                 ss.messages.append({"role": "assistant", "content": msg})
         st.stop()
 
-    # 2) すでにQモード中なら、ユーザーの回答後に次の問いを投げる
+    # 2) Qモード中：ユーザーの回答を受けたら“次の問い”を1つだけ投げる
     if ss.q_index > 0 and ss.q_index <= len(ss.questions):
-        # 次の問いがあれば出す。なければ通常会話へ。
         if ask_next_question():
             st.stop()
         else:
-            done_msg = "ありがとう！予定していた問いは以上です。続けて内容を深める質問や、レポート下書きの生成もできます。"
+            done_msg = "ありがとう！予定していた問いは以上です。続けて深掘りしてもいいですし、ここまでの内容でレポート案を作ることもできます。"
             with st.chat_message("assistant"): st.markdown(done_msg)
             ss.messages.append({"role": "assistant", "content": done_msg})
             # 以降は通常の生成にフォールバック
