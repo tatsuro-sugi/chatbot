@@ -129,24 +129,30 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
         assistant_text = st.write_stream(stream)
     ss.messages.append({"role": "assistant", "content": assistant_text})
 
-def _clean_question(q: str) -> str:
-    # 例: "Q1. あな", "Q２：〇〇", "Q 3) ..." → "あな" / "〇〇" に
-    return re.sub(r'^\s*[QＱ]\s*[\d０-９]*\s*[:：\.\)）\-–]*\s*', '', q.strip(), flags=re.IGNORECASE)
+def extract_questions(text: str, max_q: int = 10):
+    """
+    PDF本文から「Q」や「問」などで始まる質問を抽出する。
+    改行や余分な空白を除去して、自然な質問文を返す。
+    """
+    lines = text.splitlines()
+    questions = []
+    current_q = ""
 
-def ask_next_question() -> bool:
-    if ss.q_index < len(ss.questions):
-        raw_q = ss.questions[ss.q_index].strip()
-        q = _clean_question(raw_q)          # ← ここで番号などを除去
-        ss.q_index += 1
+    for line in lines:
+        # 行頭にQや問が含まれていたら新しい質問開始
+        if re.match(r'^\s*(Q|Ｑ|問|Question)\s*\d*[\.\：:）\)]*\s*', line):
+            # 前の質問を保存
+            if current_q.strip():
+                questions.append(current_q.strip())
+            # 新しい質問開始（Q1.や問1:を削除）
+            current_q = re.sub(r'^\s*(Q|Ｑ|問|Question)\s*\d*[\.\：:）\)]*\s*', '', line).strip()
+        else:
+            # 質問が続く行を結合（改行で途切れた部分を繋げる）
+            if current_q:
+                current_q += " " + line.strip()
 
-        with st.chat_message("assistant"):
-            if ss.q_index == 1:
-                st.markdown("じゃあ今回の研修を振り返っていきましょう！")
-            st.markdown(q)                  # 番号なしで自然文だけを表示
+    if current_q.strip():
+        questions.append(current_q.strip())
 
-        ss.messages.append({
-            "role": "assistant",
-            "content": ("じゃあ今回の研修を振り返っていきましょう！\n" + q) if ss.q_index == 1 else q
-        })
-        return True
-    return False
+    # 不要な空白を削除
+    questions = [re.sub(r'\s+', ' ', q) for q in questions]
