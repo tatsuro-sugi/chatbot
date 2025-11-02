@@ -1,9 +1,9 @@
 import os
-import json  # ←追加
+import json
 import streamlit as st
-import streamlit.components.v1 as components  # ←追加
+import streamlit.components.v1 as components
 from openai import OpenAI
-from src.pdf_utils import read_pdf_text  # ← 既存のPDFテキスト抽出だけ使う
+from src.pdf_utils import read_pdf_text  # PDFテキスト抽出
 
 st.title("💬 Chatbot (OpenAI)")
 st.caption("アップロードした研修ドキュメントを元に、AIと対話しながらレポートのドラフトを作成します。")
@@ -14,6 +14,7 @@ if "doc_text" not in ss: ss.doc_text = ""
 if "doc_pages" not in ss: ss.doc_pages = 0
 if "questions" not in ss: ss.questions = []       # LLMが作る“問い”
 if "q_index" not in ss: ss.q_index = 0           # 次に出す問いのindex
+if "doc_title" not in ss: ss.doc_title = "研修レポート"  # ← タイトル保持
 if "messages" not in ss:
     ss.messages = [{
         "role": "assistant",
@@ -42,8 +43,14 @@ if uploaded_pdf is not None:
     pdf_bytes = uploaded_pdf.read()
     text, pages = read_pdf_text(pdf_bytes)
     ss.doc_text, ss.doc_pages = text, pages
+    # ファイル名→タイトル（拡張子除去）
+    try:
+        fname = uploaded_pdf.name
+        ss.doc_title = os.path.splitext(fname)[0] or ss.doc_title
+    except Exception:
+        pass
     ss.questions, ss.q_index = [], 0
-    st.success(f"📄 PDFを読み込みました：{pages}ページ")
+    st.success(f"📄 PDFを読み込みました：{pages}ページ（タイトル：{ss.doc_title}）")
 
 # ===== 既存チャット表示 =====
 for m in ss.messages:
@@ -102,33 +109,47 @@ def ask_next_question(prefix: bool = True) -> bool:
         return True
     return False
 
-# ===== レポート生成ヘルパー =====
+# ===== レポート生成（盛りすぎない＆所定フォーマット） =====
 def generate_report_draft() -> str:
-    """チャット履歴（特にユーザー回答）とPDF抜粋からレポートのドラフトを生成して返す。"""
-    user_answers = "\n".join(m["content"] for m in ss.messages if m["role"] == "user")
-    context_snippet = ss.doc_text[:4000] if ss.doc_text else ""
-    report_prompt = f"""
-あなたは『研修レポート作成を支援する専門家』です。
-以下の情報（PDF抜粋と受講生の回答）をもとに、300〜500文字で日本語のレポートドラフトを作成してください。
+    """ユーザー回答とPDF抜粋から、控えめ・事実ベースのレポートを所定フォーマットで作成。"""
+    user_answers = "\n".join(m["content"] for m in ss.messages if m["role"] == "user").strip()
+    context_snippet = ss.doc_text[:3500].strip() if ss.doc_text else ""
+    title = ss.doc_title or "研修レポート"
 
-・構成は「はじめに」「学んだこと」「現場で活かしたいこと」「まとめ」
-・箇条書きではなく文章で
-・丁寧で読みやすく
+    system = (
+        "あなたは日本語で、簡潔で誇張のない文体の編集者です。"
+        "事実に基づき、断定しすぎず、丁寧に書きます。"
+    )
+    user = f"""
+次の情報（PDF抜粋と受講生の回答）だけを根拠に、短い感想文を作ってください。
+- 出力フォーマットは厳守：最初の行に【{title}】、空行1つ、次の行から本文のみ。
+- 本文は300〜450文字程度。比喩や煽りは使わず、断定しすぎない表現（〜と感じた／〜に気づいた等）を用いる。
+- 事実にない内容は書かない。推測・決めつけ・一般化のしすぎを避ける。
+- 箇条書きにしない。小見出し（はじめに 等）は付けない。
+- 「です・ます」調で統一。末尾に注記や指示文を入れない。
 
 [PDF抜粋]
 {context_snippet}
 
 [受講生の回答]
 {user_answers}
-"""
+""".strip()
+
     resp = client.chat.completions.create(
         model=MODEL,
+        temperature=0.2,  # 控えめトーン
         messages=[
-            {"role": "system", "content": "あなたは日本語でレポートを書く専門家です。"},
-            {"role": "user", "content": report_prompt},
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
         ],
     )
-    return resp.choices[0].message.content.strip()
+    body = resp.choices[0].message.content.strip()
+
+    # すでにタイトル行を含んでいればそのまま、無ければ包む
+    first_line = body.splitlines()[0] if body else ""
+    if first_line.startswith("【") and "】" in first_line:
+        return body
+    return f"【{title}】\n\n{body}"
 
 # ===== 入力受付 =====
 if prompt := st.chat_input("研修レポートの作成をはじめましょう（ここに話しかけてください）"):
@@ -138,7 +159,7 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
 
     normalized = prompt.strip().lower()
 
-    # 「できた」で即レポート生成 & コピー可能表示
+    # 「できた」で即レポート生成 & Copyボタン表示
     if normalized in {"できた", "done", "完了", "完成", "終わった"}:
         if not ss.doc_text and not any(m["role"] == "user" for m in ss.messages):
             msg = "まずはPDFのアップロードと、いくつかの質問への回答をお願いします。"
@@ -154,8 +175,8 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
         st.success("✅ レポートドラフトを作成しました！下のテキストをコピーしてお使いください。")
         st.text_area("レポート（コピーして使えます）", draft, height=320, key="draft_textarea_inline")
 
-        # ▼ Copy ボタン（ダウンロードを廃止）
-        safe = json.dumps(draft)  # JS文字列として安全に埋め込む
+        # Copy ボタン
+        safe = json.dumps(draft)
         components.html(f"""
             <button onclick='navigator.clipboard.writeText({safe}).then(() => {{
                 const n = window.parent.document.createElement("div");
@@ -211,7 +232,7 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
         assistant_text = st.write_stream(stream)
     ss.messages.append({"role": "assistant", "content": assistant_text})
 
-# =====（任意）下部に常時ドラフト表示（Copyボタン版） =====
+# ===== 下部に常時ドラフト表示（Copyボタン版） =====
 if "report_draft" in ss:
     st.markdown("---")
     st.subheader("📝 レポートドラフト")
