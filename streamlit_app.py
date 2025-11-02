@@ -21,7 +21,7 @@ if uploaded_pdf is not None:
     st.session_state.doc_pages = pages
     st.success(f"📄 PDFを読み込みました：{pages}ページ")
 else:
-    st.info("PDFをアップロードすると内容を解析できます。")
+    st.info("☝️こちらに研修資料をアップしてください！")
 
 # ===== APIキー（Secrets / 環境変数から自動取得）=====
 api_key = (st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
