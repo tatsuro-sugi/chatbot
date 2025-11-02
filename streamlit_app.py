@@ -1,55 +1,70 @@
 import os
 import streamlit as st
-from openai import OpenAI
+import anthropic
 
-st.title("💬 Chatbot (debug)")
-st.caption("UI入力が空なら Secrets を使用します。")
+st.title("💬 Claude Chatbot (Anthropic)")
+st.caption("UI入力が空なら Secrets / 環境変数の順でAPIキーを使用します。")
 
-# === キー取得：UIが空ならSecrets、その次に環境変数 ===
-ui_key = st.text_input("OpenAI API Key (空ならSecretsを使う)", type="password")
-key = (ui_key or st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+# キー取得：UI > Secrets > 環境変数
+ui_key = st.text_input("Anthropic API Key (空ならSecretsを使う)", type="password")
+api_key = (ui_key or st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or "").strip()
 
-# どこから拾ったかを表示（安全のため先頭6文字だけ）
-source = "UI" if ui_key else ("Secrets" if "OPENAI_API_KEY" in st.secrets else "Env/未設定")
-shown = (key[:6] + "…") if key else "(none)"
-st.write(f"🔎 Using key from **{source}**: `{shown}`")
+src = "UI" if ui_key else ("Secrets" if "ANTHROPIC_API_KEY" in st.secrets else "Env/未設定")
+st.write(f"🔑 Using key from **{src}**: `{(api_key[:6] + '…') if api_key else '(none)'}`")
 
-if not key:
-    st.error("APIキーが見つかりません。UIに入れるか、Settings→Secrets に `OPENAI_API_KEY` を保存してください。")
+if not api_key:
+    st.error("AnthropicのAPIキーが見つかりません。入力欄 or Settings→Secrets に `ANTHROPIC_API_KEY` を設定してください。")
     st.stop()
 
-# 必要なら project を指定（プロジェクト制限付き環境なら有効化）
-PROJECT_ID = st.secrets.get("OPENAI_PROJECT_ID", "")  # 使う場合は Secrets に入れる
-client = OpenAI(api_key=key, **({"project": PROJECT_ID} if PROJECT_ID else {}))
+client = anthropic.Anthropic(api_key=api_key)
 
-# --- まず認証だけテスト（ここで落ちるならキー問題が確定） ---
+# 認証チェック（軽いリクエスト）
 try:
-    _ = client.models.list()  # 軽いAPIで認証確認
-    st.success("✅ Auth OK")
+    # Claudeはモデル一覧APIがないため、最小呼び出しで検証
+    client.messages.create(
+        model="claude-3-haiku-20240307",  # ごく短いダミー
+        max_tokens=1,
+        messages=[{"role": "user", "content": "ping"}],
+    )
+    st.success("✅ Anthropic Auth OK")
 except Exception as e:
-    st.error("❌ 認証に失敗しました。下のエラーをログでも確認してください（Manage app → Logs）。")
+    st.error("❌ Anthropic 認証に失敗。キーを確認してください。")
     st.exception(e)
     st.stop()
 
-# ===== ここからチャット本体 =====
-if "messages" not in st.session_state: st.session_state.messages = []
-for m in st.session_state.messages:
-    with st.chat_message(m["role"]): st.markdown(m["content"])
+# チャット状態
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
+# 既存表示
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
+
+# 入力
 if prompt := st.chat_input("What is up?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"): st.markdown(prompt)
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-    def stream_gen():
-        stream = client.chat.completions.create(
-            model="gpt-4o-mini",               # 現行モデル
+    # 推奨モデル：高速なら Haiku、精度なら Sonnet
+    MODEL = "claude-3-5-sonnet-latest"  # 迷ったらこれ
+    # MODEL = "claude-3-haiku-20240307" # 速さ優先
+
+    # ストリーミングで出力
+    def stream_claude():
+        with client.messages.stream(
+            model=MODEL,
+            max_tokens=1024,
             messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages],
-            stream=True,
-        )
-        for ev in stream:
-            delta = getattr(ev.choices[0].delta, "content", None)
-            if delta: yield delta
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+            final = stream.get_final_message()
+        # write_streamの戻り値として全文が欲しいので返す
+        return final.content[0].text if final and final.content else ""
 
     with st.chat_message("assistant"):
-        out = st.write_stream(stream_gen())
-    st.session_state.messages.append({"role": "assistant", "content": out})
+        assistant_text = st.write_stream(stream_claude())
+
+    st.session_state.messages.append({"role": "assistant", "content": assistant_text})
