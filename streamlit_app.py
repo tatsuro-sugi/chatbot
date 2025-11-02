@@ -1,9 +1,32 @@
 import os
 import streamlit as st
 from openai import OpenAI
+from src.pdf_utils import read_pdf_text
 
 st.title("💬 Chatbot (OpenAI)")
 st.caption("UI入力が空なら Secrets / 環境変数の順でAPIキーを使用します。")
+
+
+# ===== PDFアップロード =====
+uploaded_pdf = st.file_uploader("研修ドキュメント（PDF）をアップロード", type=["pdf"])
+
+if "doc_text" not in st.session_state:
+    st.session_state.doc_text = ""
+if "doc_pages" not in st.session_state:
+    st.session_state.doc_pages = 0
+
+if uploaded_pdf is not None:
+    pdf_bytes = uploaded_pdf.read()
+    text, pages = read_pdf_text(pdf_bytes)
+    st.session_state.doc_text = text
+    st.session_state.doc_pages = pages
+
+if st.session_state.doc_text:
+    st.success(f"📄 PDFを読み込みました：{st.session_state.doc_pages}ページ")
+    with st.expander("🔎 テキストプレビュー（先頭2,000文字）", expanded=False):
+        st.text(st.session_state.doc_text[:2000] or "テキストを抽出できませんでした。")
+else:
+    st.info("PDFをアップロードすると、ここにプレビューが表示されます。")
 
 # --- キー取得：UI > Secrets > 環境変数 ---
 ui_key = st.text_input("OpenAI API Key (空ならSecretsを使う)", type="password")
