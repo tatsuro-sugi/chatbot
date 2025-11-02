@@ -41,7 +41,7 @@ if "messages" not in st.session_state:
         {
             "role": "assistant",
             "content": (
-                "💬 研修お疲れさまでした！\n"
+                "研修お疲れさまでした！\n"
                 "まずは研修ドキュメント（PDF）をアップロードしてください。\n"
                 "アップできたら **ok** とだけ送ってください。"
             ),
@@ -73,7 +73,7 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
     if normalized in {"ok", "ｏｋ", "おk", "了解", "アップした", "upした", "done", "完了"}:
         if st.session_state.doc_text:
             next_msg = (
-                "研修を受けてどうでしたか？\n"
+                "アップロードありがとう。研修を受けてどうでしたか？\n"
                 "まずは**感想を気軽に書いてください😉**"
             )
         else:
