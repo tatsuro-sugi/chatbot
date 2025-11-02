@@ -20,31 +20,20 @@ def read_pdf_text(file_bytes: bytes) -> Tuple[str, int]:
 def extract_questions(doc_text: str, max_q: int = 10) -> List[str]:
     """
     資料内の“問い”を抽出して返す。
-      Q: xxx / Q1: xxx / Ｑ２：xxx / 問1 xxx / 【問3】xxx / 問題：xxx
-    等の表記に対応（全角半角）。
+    改行を含む「Q1.」「Q2.」形式の質問にも対応。
     """
-    lines = [l.strip() for l in doc_text.splitlines()]
     qs: List[str] = []
-
-    patterns = [
-        r'^\s*[QＱ]\s*[:：]\s*(.+)$',
-        r'^\s*[QＱ]\s*\d+\s*[:：\.\．\)）-]?\s*(.+)$',
-        r'^\s*問\s*\d+\s*[:：\.\．\)）-]?\s*(.+)$',
-        r'^\s*【?問\d+】?\s*(.+)$',
-        r'^\s*問題\s*[:：]\s*(.+)$',
-    ]
-    regexes = [re.compile(p) for p in patterns]
-
-    for ln in lines:
-        for rx in regexes:
-            m = rx.match(ln)
-            if m:
-                q = m.group(1).strip()
-                q = re.sub(r'[　\s]+$', '', q)
-                if q and q not in qs:
-                    qs.append(q)
-                break
+    # Q行を中心に、その次の1〜2行も一緒に見る
+    lines = [l.strip() for l in doc_text.splitlines()]
+    for i, line in enumerate(lines):
+        if re.match(r'^(Q\d+|Ｑ\d+|問\d+|Q|Ｑ|問題)\s*[\.．:：]?', line):
+            q_line = line
+            # 次の行に内容がある場合は結合
+            if i + 1 < len(lines) and lines[i + 1]:
+                q_line += " " + lines[i + 1].strip()
+            if i + 2 < len(lines) and len(lines[i + 1]) < 5 and lines[i + 2]:
+                q_line += " " + lines[i + 2].strip()
+            qs.append(q_line.strip())
         if len(qs) >= max_q:
             break
-
     return qs
