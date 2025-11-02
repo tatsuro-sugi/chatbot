@@ -155,3 +155,39 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
     with st.chat_message("assistant"):
         assistant_text = st.write_stream(stream)
     ss.messages.append({"role": "assistant", "content": assistant_text})
+
+# ===== レポート生成ボタン =====
+if ss.q_index >= len(ss.questions) and ss.questions:
+    st.markdown("---")
+    st.subheader("📝 レポートドラフトの作成")
+
+    if st.button("レポートを生成する"):
+        with st.spinner("レポートを作成中..."):
+            # ユーザーの回答をまとめて連結
+            user_answers = "\n".join(
+                [f"{m['content']}" for m in ss.messages if m["role"] == "user"]
+            )
+
+            # モデルにまとめを依頼
+            report_prompt = f"""
+あなたは『研修レポート作成を支援する専門家』です。
+以下は受講生の回答です。これらをもとに、レポートのドラフトを作成してください。
+
+- 構成は「はじめに」「学んだこと」「現場で活かしたいこと」「まとめ」
+- 丁寧な語り口で、自然な日本語でまとめる
+- 300〜500文字程度
+- 箇条書きではなく、レポート文体で
+
+【受講生の回答】
+{user_answers}
+"""
+            completion = client.chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "system", "content": "あなたは日本語でレポートを書く専門家です。"},
+                          {"role": "user", "content": report_prompt}],
+            )
+
+            draft = completion.choices[0].message.content.strip()
+
+            st.success("✅ レポートドラフトを作成しました！")
+            st.text_area("レポート（コピーして使えます）", draft, height=300)
