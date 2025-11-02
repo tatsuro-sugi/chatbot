@@ -21,7 +21,7 @@ if uploaded_pdf is not None:
     st.session_state.doc_pages = pages
     st.success(f"📄 PDFを読み込みました：{pages}ページ")
 else:
-    st.info("☝️こちらに研修資料をアップしてください！")
+    st.info("PDFをアップロードすると内容を解析できます。")
 
 # ===== APIキー（Secrets / 環境変数から自動取得）=====
 api_key = (st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
@@ -37,8 +37,14 @@ client = OpenAI(**client_args)
 
 # ===== チャット履歴 =====
 if "messages" not in st.session_state:
-    st.session_state.messages = []
+    st.session_state.messages = [
+        {
+            "role": "assistant",
+            "content": "💬 研修お疲れ様でした！\n\nこのチャットでは、あなたの研修内容をもとにレポート作成をサポートします。\nまずは研修ドキュメント（PDF）をアップロードしてください。",
+        }
+    ]
 
+# 既存メッセージ表示
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
@@ -46,7 +52,6 @@ for m in st.session_state.messages:
 # ===== 入力と応答 =====
 MODEL = "gpt-4o-mini"
 
-# PDFテキストをsystemプロンプトに反映
 context_snippet = st.session_state.doc_text[:6000] if st.session_state.doc_text else ""
 system_prompt = (
     "あなたは『研修レポート作成を支援する専門家』です。"
