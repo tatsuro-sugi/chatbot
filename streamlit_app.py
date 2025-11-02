@@ -1,5 +1,7 @@
 import os
+import json  # ←追加
 import streamlit as st
+import streamlit.components.v1 as components  # ←追加
 from openai import OpenAI
 from src.pdf_utils import read_pdf_text  # ← 既存のPDFテキスト抽出だけ使う
 
@@ -50,11 +52,6 @@ for m in ss.messages:
 
 # ===== “ざっくり読んで問いを作る”関数 =====
 def make_questions_from_doc(doc_text: str, n: int = 3) -> list[str]:
-    """
-    PDFの先頭～中盤をかいつまんでLLMに渡し、対話用の問いを n 個作ってもらう。
-    ・研修のふり返り向け（感想→学び→現場適用）を意識
-    ・短く、1問ずつ独立、箇条書きで返す
-    """
     snippet = (doc_text or "").strip()
     if len(snippet) > 9000:
         snippet = snippet[:6000] + "\n...\n" + doc_text[-2500:]
@@ -97,7 +94,7 @@ def ask_next_question(prefix: bool = True) -> bool:
     if ss.q_index < len(ss.questions):
         q = ss.questions[ss.q_index]
         ss.q_index += 1
-        msg = (("じゃあ今回の研修を振り返っていきましょう！\n" if prefix and ss.q_index == 1 else "") 
+        msg = (("じゃあ今回の研修を振り返っていきましょう！\n" if prefix and ss.q_index == 1 else "")
                + f"{q}\n\n自由に書いてください。")
         with st.chat_message("assistant"):
             st.markdown(msg)
@@ -155,8 +152,22 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
         ss.report_draft = draft  # セッション保持
 
         st.success("✅ レポートドラフトを作成しました！下のテキストをコピーしてお使いください。")
-        st.text_area("レポート（コピーして使えます）", draft, height=320)
-        st.download_button("TXTとしてダウンロード", data=draft, file_name="training_report_draft.txt")
+        st.text_area("レポート（コピーして使えます）", draft, height=320, key="draft_textarea_inline")
+
+        # ▼ Copy ボタン（ダウンロードを廃止）
+        safe = json.dumps(draft)  # JS文字列として安全に埋め込む
+        components.html(f"""
+            <button onclick='navigator.clipboard.writeText({safe}).then(() => {{
+                const n = window.parent.document.createElement("div");
+                n.textContent = "レポートをコピーしました！";
+                n.style.cssText = "position:fixed;right:16px;bottom:16px;background:#4caf50;color:#fff;padding:8px 12px;border-radius:8px;font-size:14px;z-index:9999;";
+                window.parent.document.body.appendChild(n);
+                setTimeout(()=>n.remove(), 1600);
+            }})' style="
+                background:#4CAF50;color:#fff;border:none;padding:8px 16px;
+                border-radius:6px;cursor:pointer;margin-top:6px;
+            ">📋 Copy</button>
+        """, height=60)
         st.stop()
 
     # 「ok」合図で：未生成なら問いを作る→1つずつ投げる
@@ -200,14 +211,27 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
         assistant_text = st.write_stream(stream)
     ss.messages.append({"role": "assistant", "content": assistant_text})
 
-# =====（任意）下部に常時ドラフト表示 =====
+# =====（任意）下部に常時ドラフト表示（Copyボタン版） =====
 if "report_draft" in ss:
     st.markdown("---")
     st.subheader("📝 レポートドラフト")
-    st.text_area("レポート（コピーして使えます）", ss.report_draft, height=320)
-    st.download_button("TXTとしてダウンロード", data=ss.report_draft, file_name="training_report_draft.txt")
+    st.text_area("レポート（コピーして使えます）", ss.report_draft, height=320, key="draft_textarea_panel")
 
-# ===== レポート生成ボタン（クリック派向け。残しておく） =====
+    safe = json.dumps(ss.report_draft)
+    components.html(f"""
+        <button onclick='navigator.clipboard.writeText({safe}).then(() => {{
+            const n = window.parent.document.createElement("div");
+            n.textContent = "レポートをコピーしました！";
+            n.style.cssText = "position:fixed;right:16px;bottom:16px;background:#4caf50;color:#fff;padding:8px 12px;border-radius:8px;font-size:14px;z-index:9999;";
+            window.parent.document.body.appendChild(n);
+            setTimeout(()=>n.remove(), 1600);
+        }})' style="
+            background:#4CAF50;color:#fff;border:none;padding:8px 16px;
+            border-radius:6px;cursor:pointer;margin-top:6px;
+        ">📋 Copy</button>
+    """, height=60)
+
+# ===== レポート生成ボタン（クリック派向け。Copyに統一） =====
 if ss.q_index >= len(ss.questions) and ss.questions:
     st.markdown("---")
     st.subheader("📝 レポートドラフトの作成")
@@ -216,5 +240,18 @@ if ss.q_index >= len(ss.questions) and ss.questions:
             draft = generate_report_draft()
             ss.report_draft = draft
             st.success("✅ レポートドラフトを作成しました！")
-            st.text_area("レポート（コピーして使えます）", draft, height=300)
-            st.download_button("TXTとしてダウンロード", data=draft, file_name="training_report_draft.txt")
+            st.text_area("レポート（コピーして使えます）", draft, height=300, key="draft_textarea_button")
+
+            safe2 = json.dumps(draft)
+            components.html(f"""
+                <button onclick='navigator.clipboard.writeText({safe2}).then(() => {{
+                    const n = window.parent.document.createElement("div");
+                    n.textContent = "レポートをコピーしました！";
+                    n.style.cssText = "position:fixed;right:16px;bottom:16px;background:#4caf50;color:#fff;padding:8px 12px;border-radius:8px;font-size:14px;z-index:9999;";
+                    window.parent.document.body.appendChild(n);
+                    setTimeout(()=>n.remove(), 1600);
+                }})' style="
+                    background:#4CAF50;color:#fff;border:none;padding:8px 16px;
+                    border-radius:6px;cursor:pointer;margin-top:6px;
+                ">📋 Copy</button>
+            """, height=60)
