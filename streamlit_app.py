@@ -1,21 +1,17 @@
 import os
-import re
 import streamlit as st
 from openai import OpenAI
-from src.pdf_utils import read_pdf_text, extract_questions
+from src.pdf_utils import read_pdf_text  # ← 既存のPDFテキスト抽出だけ使う
 
 st.title("💬 Chatbot (OpenAI)")
 st.caption("アップロードした研修ドキュメントを元に、AIと対話しながらレポートのドラフトを作成します。")
 
-# ===== PDFアップロード =====
-uploaded_pdf = st.file_uploader("研修ドキュメント（PDF）をアップロード", type=["pdf"])
-
-# セッション初期化
+# ===== セッション初期化 =====
 ss = st.session_state
 if "doc_text" not in ss: ss.doc_text = ""
 if "doc_pages" not in ss: ss.doc_pages = 0
-if "questions" not in ss: ss.questions = []       # 抽出した“問い”の配列
-if "q_index" not in ss: ss.q_index = 0           # 次に投げる問いのインデックス
+if "questions" not in ss: ss.questions = []       # LLMが作る“問い”
+if "q_index" not in ss: ss.q_index = 0           # 次に出す問いのindex
 if "messages" not in ss:
     ss.messages = [{
         "role": "assistant",
@@ -26,18 +22,7 @@ if "messages" not in ss:
         ),
     }]
 
-# PDF読み込み
-if uploaded_pdf is not None:
-    pdf_bytes = uploaded_pdf.read()
-    text, pages = read_pdf_text(pdf_bytes)
-    ss.doc_text, ss.doc_pages = text, pages
-    ss.questions = extract_questions(text, max_q=10)  # ← ここで問いを抽出
-    ss.q_index = 0
-    st.success(f"📄 PDFを読み込みました：{pages}ページ")
-else:
-    st.info("PDFをアップロードすると内容を解析できます。")
-
-# ===== APIキー（Secrets / 環境変数から自動取得）=====
+# ===== APIキー（Secrets / Env）=====
 api_key    = (st.secrets.get("OPENAI_API_KEY")    or os.getenv("OPENAI_API_KEY")    or "").strip()
 project_id = (st.secrets.get("OPENAI_PROJECT_ID") or os.getenv("OPENAI_PROJECT_ID") or "").strip()
 if not api_key:
@@ -47,40 +32,78 @@ if not api_key:
 client_args = {"api_key": api_key}
 if project_id: client_args["project"] = project_id
 client = OpenAI(**client_args)
+MODEL = "gpt-4o-mini"
 
-# 既存チャット表示
+# ===== PDFアップロード =====
+uploaded_pdf = st.file_uploader("研修ドキュメント（PDF）をアップロード", type=["pdf"])
+if uploaded_pdf is not None:
+    pdf_bytes = uploaded_pdf.read()
+    text, pages = read_pdf_text(pdf_bytes)
+    ss.doc_text, ss.doc_pages = text, pages
+    ss.questions, ss.q_index = [], 0
+    st.success(f"📄 PDFを読み込みました：{pages}ページ")
+
+# ===== 既存チャット表示 =====
 for m in ss.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-MODEL = "gpt-4o-mini"
+# ===== “ざっくり読んで問いを作る”関数 =====
+def make_questions_from_doc(doc_text: str, n: int = 3) -> list[str]:
+    """
+    PDFの先頭～中盤をかいつまんでLLMに渡し、対話用の問いを n 個作ってもらう。
+    ・研修のふり返り向け（感想→学び→現場適用）を意識
+    ・短く、1問ずつ独立、箇条書きで返す
+    """
+    snippet = (doc_text or "").strip()
+    if len(snippet) > 9000:
+        # 適当に頭と末尾を繋いでコンテキストを増やす
+        snippet = snippet[:6000] + "\n...\n" + doc_text[-2500:]
 
-# システムプロンプト（PDFの要点を渡したい場合）
-context_snippet = ss.doc_text[:6000] if ss.doc_text else ""
-system_prompt = (
-    "あなたは『研修レポート作成を支援する専門家』です。"
-    "丁寧で論理的に、文脈に沿って分かりやすく説明してください。"
-    + (f"\n\n--- 参考ドキュメント抜粋 ---\n{context_snippet}" if context_snippet else "")
-)
+    sys = (
+        "あなたは“研修のふり返り”を促す専門家です。"
+        "以下の資料抜粋をざっくり把握し、学習者が答えやすい自然な問いを"
+        "日本語で短く3～4文（1文=1問い）作ってください。"
+        "・『Q1.』などの番号や記号は付けない\n"
+        "・1行1問い、簡潔、具体\n"
+        "・最初は感想→次に学び→最後に現場での適用/次の一歩、の順が望ましい"
+    )
+    user = f"【資料抜粋】\n{snippet}\n\n出力：箇条書き（- で始める）。{n}個。"
 
-# ===== ここが 1) の置き換え：自然な会話形式で1問ずつ出す =====
-def ask_next_question() -> bool:
-    """抽出済みの問いを1つだけ自然文で投げる。投げたら True、もう無ければ False。"""
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": sys},
+            {"role": "user", "content": user},
+        ],
+        temperature=0.3,
+    )
+    text = resp.choices[0].message.content.strip()
+
+    # 箇条書きを行ごとに拾う
+    qs = []
+    for line in text.splitlines():
+        line = line.strip(" ・-‐*●\t").strip()
+        if not line:
+            continue
+        # 先頭の番号/括弧などを剥がす
+        for pref in ("Q1", "Q2", "Q3", "Q4", "１", "２", "３"):
+            line = line.removeprefix(pref).strip(".．:：）) 」").strip()
+        qs.append(line)
+        if len(qs) >= n:
+            break
+    return qs
+
+def ask_next_question(prefix: bool = True) -> bool:
+    """次の問いを1つ表示。なければFalse。"""
     if ss.q_index < len(ss.questions):
-        q = ss.questions[ss.q_index].strip()
+        q = ss.questions[ss.q_index]
         ss.q_index += 1
-
+        msg = (("じゃあ今回の研修を振り返っていきましょう！\n" if prefix and ss.q_index == 1 else "") 
+               + f"{q}\n\n自由に書いてください。")
         with st.chat_message("assistant"):
-            # 最初の1問目だけ、導入のひと言を添える
-            if ss.q_index == 1:
-                st.markdown("じゃあ今回の研修を振り返っていきましょう！")
-            st.markdown(q)  # 見出しや番号は付けず、質問文そのまま
-
-        # ログにも保存（1問目は導入文を含めて保存）
-        ss.messages.append({
-            "role": "assistant",
-            "content": ("じゃあ今回の研修を振り返っていきましょう！\n" + q) if ss.q_index == 1 else q
-        })
+            st.markdown(msg)
+        ss.messages.append({"role": "assistant", "content": msg})
         return True
     return False
 
@@ -92,67 +115,43 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
 
     normalized = prompt.strip().lower()
 
-    # 1) 最初の合図「ok」で、抽出済みの“問い”を投げ始める
+    # 「ok」合図で：未生成なら問いを作る→1つずつ投げる
     if normalized in {"ok", "ｏｋ", "おk", "了解", "upした", "アップした", "done", "完了"}:
         if not ss.doc_text:
             msg = "まだPDFが読み込まれていないようです。先に研修ドキュメント（PDF）をアップしてください。"
             with st.chat_message("assistant"): st.markdown(msg)
             ss.messages.append({"role": "assistant", "content": msg})
         else:
-            # 問いが見つかったら順番に出す。無ければ感想を促す
-            if ss.questions:
-                ask_next_question()
-            else:
-                msg = "資料内で“Q”が見つかりませんでした。まずは研修の感想から教えてください。"
+            if not ss.questions:
+                ss.questions = make_questions_from_doc(ss.doc_text, n=3)
+                ss.q_index = 0
+            if not ask_next_question(prefix=True):
+                msg = "資料から問いを作れませんでした。まずは**感想を気軽に書いてください😉**"
                 with st.chat_message("assistant"): st.markdown(msg)
                 ss.messages.append({"role": "assistant", "content": msg})
         st.stop()
 
-    # 2) Qモード中：ユーザーの回答を受けたら“次の問い”を1つだけ投げる
-    if ss.q_index > 0 and ss.q_index <= len(ss.questions):
-        if ask_next_question():
+    # すでに問いモードなら、回答のたびに次を出す
+    if ss.questions and ss.q_index > 0 and ss.q_index <= len(ss.questions):
+        if ask_next_question(prefix=False):
             st.stop()
         else:
-            done_msg = "ありがとう！予定していた問いは以上です。続けて深掘りしてもいいですし、ここまでの内容でレポート案を作ることもできます。"
-            with st.chat_message("assistant"): st.markdown(done_msg)
-            ss.messages.append({"role": "assistant", "content": done_msg})
-            # 以降は通常の生成にフォールバック
+            done = "ありがとう！予定していた問いは以上です。続けて深掘りや、レポート下書きの生成もできます。"
+            with st.chat_message("assistant"): st.markdown(done)
+            ss.messages.append({"role": "assistant", "content": done})
 
-    # 3) 通常の応答（モデル呼び出し）
-    messages_for_api = [{"role": "system", "content": system_prompt}] + ss.messages
+    # 通常応答（必要なら）
+    context_snippet = ss.doc_text[:6000] if ss.doc_text else ""
+    system_prompt = (
+        "あなたは『研修レポート作成を支援する専門家』です。"
+        "丁寧で論理的に、文脈に沿って分かりやすく説明してください。"
+        + (f"\n\n--- 参考ドキュメント抜粋 ---\n{context_snippet}" if context_snippet else "")
+    )
     stream = client.chat.completions.create(
         model=MODEL,
-        messages=messages_for_api,
+        messages=[{"role": "system", "content": system_prompt}] + ss.messages,
         stream=True,
     )
     with st.chat_message("assistant"):
         assistant_text = st.write_stream(stream)
     ss.messages.append({"role": "assistant", "content": assistant_text})
-
-def extract_questions(text: str, max_q: int = 10):
-    """
-    PDF本文から「Q」や「問」などで始まる質問を抽出する。
-    改行や余分な空白を除去して、自然な質問文を返す。
-    """
-    lines = text.splitlines()
-    questions = []
-    current_q = ""
-
-    for line in lines:
-        # 行頭にQや問が含まれていたら新しい質問開始
-        if re.match(r'^\s*(Q|Ｑ|問|Question)\s*\d*[\.\：:）\)]*\s*', line):
-            # 前の質問を保存
-            if current_q.strip():
-                questions.append(current_q.strip())
-            # 新しい質問開始（Q1.や問1:を削除）
-            current_q = re.sub(r'^\s*(Q|Ｑ|問|Question)\s*\d*[\.\：:）\)]*\s*', '', line).strip()
-        else:
-            # 質問が続く行を結合（改行で途切れた部分を繋げる）
-            if current_q:
-                current_q += " " + line.strip()
-
-    if current_q.strip():
-        questions.append(current_q.strip())
-
-    # 不要な空白を削除
-    questions = [re.sub(r'\s+', ' ', q) for q in questions]
