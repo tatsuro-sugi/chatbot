@@ -40,11 +40,15 @@ if "messages" not in st.session_state:
     st.session_state.messages = [
         {
             "role": "assistant",
-            "content": "研修お疲れさまでした！まずは研修ドキュメント（PDF）をアップロードしてください。アップできたら「ok」と言ってください",
+            "content": (
+                "💬 研修お疲れさまでした！\n"
+                "まずは研修ドキュメント（PDF）をアップロードしてください。\n"
+                "アップできたら **ok** とだけ送ってください。"
+            ),
         }
     ]
 
-# 既存メッセージ表示
+# ===== 既存メッセージ表示 =====
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
@@ -64,6 +68,26 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    # ===== 「ok」ハンドリング =====
+    normalized = prompt.strip().lower()
+    if normalized in {"ok", "ｏｋ", "おk", "了解", "アップした", "upした", "done", "完了"}:
+        if st.session_state.doc_text:
+            next_msg = (
+                "研修を受けてどうでしたか？\n"
+                "まずは**感想を気軽に書いてください😉**"
+            )
+        else:
+            next_msg = (
+                "まだPDFが読み込まれていないようです。\n"
+                "先に研修ドキュメント（PDF）をアップロードしてください。"
+            )
+
+        with st.chat_message("assistant"):
+            st.markdown(next_msg)
+        st.session_state.messages.append({"role": "assistant", "content": next_msg})
+        st.stop()
+
+    # ===== 通常の応答 =====
     messages_for_api = [{"role": "system", "content": system_prompt}]
     messages_for_api += st.session_state.messages
 
