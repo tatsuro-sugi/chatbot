@@ -1,4 +1,5 @@
 import os
+import re
 import streamlit as st
 from openai import OpenAI
 from src.pdf_utils import read_pdf_text, extract_questions
@@ -127,3 +128,25 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
     with st.chat_message("assistant"):
         assistant_text = st.write_stream(stream)
     ss.messages.append({"role": "assistant", "content": assistant_text})
+
+def _clean_question(q: str) -> str:
+    # 例: "Q1. あな", "Q２：〇〇", "Q 3) ..." → "あな" / "〇〇" に
+    return re.sub(r'^\s*[QＱ]\s*[\d０-９]*\s*[:：\.\)）\-–]*\s*', '', q.strip(), flags=re.IGNORECASE)
+
+def ask_next_question() -> bool:
+    if ss.q_index < len(ss.questions):
+        raw_q = ss.questions[ss.q_index].strip()
+        q = _clean_question(raw_q)          # ← ここで番号などを除去
+        ss.q_index += 1
+
+        with st.chat_message("assistant"):
+            if ss.q_index == 1:
+                st.markdown("じゃあ今回の研修を振り返っていきましょう！")
+            st.markdown(q)                  # 番号なしで自然文だけを表示
+
+        ss.messages.append({
+            "role": "assistant",
+            "content": ("じゃあ今回の研修を振り返っていきましょう！\n" + q) if ss.q_index == 1 else q
+        })
+        return True
+    return False
