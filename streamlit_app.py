@@ -57,7 +57,6 @@ def make_questions_from_doc(doc_text: str, n: int = 3) -> list[str]:
     """
     snippet = (doc_text or "").strip()
     if len(snippet) > 9000:
-        # 適当に頭と末尾を繋いでコンテキストを増やす
         snippet = snippet[:6000] + "\n...\n" + doc_text[-2500:]
 
     sys = (
@@ -80,15 +79,14 @@ def make_questions_from_doc(doc_text: str, n: int = 3) -> list[str]:
     )
     text = resp.choices[0].message.content.strip()
 
-    # 箇条書きを行ごとに拾う
     qs = []
     for line in text.splitlines():
         line = line.strip(" ・-‐*●\t").strip()
         if not line:
             continue
-        # 先頭の番号/括弧などを剥がす
         for pref in ("Q1", "Q2", "Q3", "Q4", "１", "２", "３"):
-            line = line.removeprefix(pref).strip(".．:：）) 」").strip()
+            if line.startswith(pref):
+                line = line[len(pref):].lstrip(".．:：）) 」　 ")
         qs.append(line)
         if len(qs) >= n:
             break
@@ -107,6 +105,34 @@ def ask_next_question(prefix: bool = True) -> bool:
         return True
     return False
 
+# ===== レポート生成ヘルパー =====
+def generate_report_draft() -> str:
+    """チャット履歴（特にユーザー回答）とPDF抜粋からレポートのドラフトを生成して返す。"""
+    user_answers = "\n".join(m["content"] for m in ss.messages if m["role"] == "user")
+    context_snippet = ss.doc_text[:4000] if ss.doc_text else ""
+    report_prompt = f"""
+あなたは『研修レポート作成を支援する専門家』です。
+以下の情報（PDF抜粋と受講生の回答）をもとに、300〜500文字で日本語のレポートドラフトを作成してください。
+
+・構成は「はじめに」「学んだこと」「現場で活かしたいこと」「まとめ」
+・箇条書きではなく文章で
+・丁寧で読みやすく
+
+[PDF抜粋]
+{context_snippet}
+
+[受講生の回答]
+{user_answers}
+"""
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": "あなたは日本語でレポートを書く専門家です。"},
+            {"role": "user", "content": report_prompt},
+        ],
+    )
+    return resp.choices[0].message.content.strip()
+
 # ===== 入力受付 =====
 if prompt := st.chat_input("研修レポートの作成をはじめましょう（ここに話しかけてください）"):
     ss.messages.append({"role": "user", "content": prompt})
@@ -114,6 +140,24 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
         st.markdown(prompt)
 
     normalized = prompt.strip().lower()
+
+    # 「できた」で即レポート生成 & コピー可能表示
+    if normalized in {"できた", "done", "完了", "完成", "終わった"}:
+        if not ss.doc_text and not any(m["role"] == "user" for m in ss.messages):
+            msg = "まずはPDFのアップロードと、いくつかの質問への回答をお願いします。"
+            with st.chat_message("assistant"): st.markdown(msg)
+            ss.messages.append({"role": "assistant", "content": msg})
+            st.stop()
+
+        with st.chat_message("assistant"):
+            st.markdown("📝 レポートを作成中…")
+        draft = generate_report_draft()
+        ss.report_draft = draft  # セッション保持
+
+        st.success("✅ レポートドラフトを作成しました！下のテキストをコピーしてお使いください。")
+        st.text_area("レポート（コピーして使えます）", draft, height=320)
+        st.download_button("TXTとしてダウンロード", data=draft, file_name="training_report_draft.txt")
+        st.stop()
 
     # 「ok」合図で：未生成なら問いを作る→1つずつ投げる
     if normalized in {"ok", "ｏｋ", "おk", "了解", "upした", "アップした", "done", "完了"}:
@@ -136,7 +180,7 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
         if ask_next_question(prefix=False):
             st.stop()
         else:
-            done = "ありがとう！予定していた問いは以上です。続けて深掘りや、レポート下書きの生成もできます。"
+            done = "ありがとう！予定していた問いは以上です。必要なら「できた」と送るとドラフトを作成します。"
             with st.chat_message("assistant"): st.markdown(done)
             ss.messages.append({"role": "assistant", "content": done})
 
@@ -156,38 +200,21 @@ if prompt := st.chat_input("研修レポートの作成をはじめましょう�
         assistant_text = st.write_stream(stream)
     ss.messages.append({"role": "assistant", "content": assistant_text})
 
-# ===== レポート生成ボタン =====
+# =====（任意）下部に常時ドラフト表示 =====
+if "report_draft" in ss:
+    st.markdown("---")
+    st.subheader("📝 レポートドラフト")
+    st.text_area("レポート（コピーして使えます）", ss.report_draft, height=320)
+    st.download_button("TXTとしてダウンロード", data=ss.report_draft, file_name="training_report_draft.txt")
+
+# ===== レポート生成ボタン（クリック派向け。残しておく） =====
 if ss.q_index >= len(ss.questions) and ss.questions:
     st.markdown("---")
     st.subheader("📝 レポートドラフトの作成")
-
     if st.button("レポートを生成する"):
         with st.spinner("レポートを作成中..."):
-            # ユーザーの回答をまとめて連結
-            user_answers = "\n".join(
-                [f"{m['content']}" for m in ss.messages if m["role"] == "user"]
-            )
-
-            # モデルにまとめを依頼
-            report_prompt = f"""
-あなたは『研修レポート作成を支援する専門家』です。
-以下は受講生の回答です。これらをもとに、レポートのドラフトを作成してください。
-
-- 構成は「はじめに」「学んだこと」「現場で活かしたいこと」「まとめ」
-- 丁寧な語り口で、自然な日本語でまとめる
-- 300〜500文字程度
-- 箇条書きではなく、レポート文体で
-
-【受講生の回答】
-{user_answers}
-"""
-            completion = client.chat.completions.create(
-                model=MODEL,
-                messages=[{"role": "system", "content": "あなたは日本語でレポートを書く専門家です。"},
-                          {"role": "user", "content": report_prompt}],
-            )
-
-            draft = completion.choices[0].message.content.strip()
-
+            draft = generate_report_draft()
+            ss.report_draft = draft
             st.success("✅ レポートドラフトを作成しました！")
             st.text_area("レポート（コピーして使えます）", draft, height=300)
+            st.download_button("TXTとしてダウンロード", data=draft, file_name="training_report_draft.txt")
