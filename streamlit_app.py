@@ -40,7 +40,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = [
         {
             "role": "assistant",
-            "content": "💬 研修お疲れ様でした！\n\nこのチャットでは、あなたの研修内容をもとにレポート作成をサポートします。\nまずは研修ドキュメント（PDF）をアップロードしてください。",
+            "content": "研修お疲れさまでした！まずは研修ドキュメント（PDF）をアップロードしてください。アップできたら「ok」と言ってください",
         }
     ]
 
